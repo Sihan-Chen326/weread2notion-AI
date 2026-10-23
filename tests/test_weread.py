@@ -24,6 +24,16 @@ class Session:
         return Response(next(self.pages))
 
 
+def test_shelf_request_reports_current_skill_version():
+    session = Session([{"errcode": 0, "books": []}])
+    client = WeReadClient("test-key", session=session)
+
+    client.shelf()
+
+    assert session.payloads[0]["api_name"] == "/shelf/sync"
+    assert session.payloads[0]["skill_version"] == "1.0.5"
+
+
 def test_notebook_pagination_is_flat_and_uses_last_sort():
     session = Session(
         [
