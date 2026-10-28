@@ -214,14 +214,48 @@ class Synchronizer:
             self.sync_daily_snapshots(entry_by_id, bundles, previous_books)
         self.sync_book_content(bundles, books, periods)
         self.sync_reading_records(days, periods, full=rebuild)
-        self.counts["reading_seconds"] = int(
-            (stats.get("overall") or {}).get("totalReadTime") or 0
-        )
+        self.sync_overall_read_time(stats.get("overall") or {})
         result = dict(self.counts)
         if self.failed_books:
             result["failed_books"] = self.failed_books
             result["failed_book_count"] = len(self.failed_books)
         return result
+
+    def sync_overall_read_time(self, overall: dict[str, Any]) -> None:
+        """Persist WeRead's authoritative cumulative reading time.
+
+        Do not sum daily or annual buckets here: /readdata/detail in overall
+        mode exposes totalReadTime in seconds, and the buckets may be
+        incomplete or use a different granularity. This optional database
+        powers a one-row, chart-free linked view in the personal reading room.
+        """
+        raw_seconds = overall.get("totalReadTime")
+        try:
+            seconds = int(raw_seconds) if raw_seconds is not None else 0
+        except (TypeError, ValueError, OverflowError):
+            seconds = 0
+        # Never overwrite a previously verified total on an empty/error payload.
+        if seconds <= 0:
+            return
+
+        self.counts["reading_seconds"] = seconds
+        if not self.notion or "阅读总览" not in self.notion.sources:
+            return
+
+        hours = round(seconds / 3600, 1)
+        self.notion.upsert(
+            "阅读总览",
+            "同步键",
+            "overall",
+            {
+                "项目": f"{hours:g} 小时",
+                "同步键": "overall",
+                "累计阅读秒": seconds,
+                "累计阅读小时": hours,
+                "最近更新": datetime.now(SHANGHAI).date().isoformat(),
+            },
+            TARGET_ICON,
+        )
 
     def sync_daily_snapshots(
         self,
