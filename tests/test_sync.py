@@ -562,3 +562,31 @@ def test_removed_book_and_related_rows_are_moved_to_trash():
         {"in_trash": True},
     )
     assert sync.counts["删除书架"] == 1
+
+
+def test_overall_reading_time_updates_single_notion_summary_row():
+    notion = Notion()
+    notion.sources["阅读总览"] = "reading-overview-source"
+    notion.schemas["阅读总览"] = {
+        "项目": "title",
+        "同步键": "rich_text",
+        "累计阅读秒": "number",
+        "累计阅读小时": "number",
+        "最近更新": "date",
+    }
+    sync = Synchronizer(None, notion)
+    sync.sync_overall_read_time({"totalReadTime": 493200})
+    row = next(row for row in notion.upserts if row["database"] == "阅读总览")
+    assert row["key_name"] == "同步键"
+    assert row["key_value"] == "overall"
+    assert row["raw"]["累计阅读小时"] == 137.0
+    assert sync.counts["reading_seconds"] == 493200
+
+
+def test_overall_reading_time_does_not_overwrite_verified_total_if_missing():
+    notion = Notion()
+    notion.sources["阅读总览"] = "reading-overview-source"
+    sync = Synchronizer(None, notion)
+    sync.sync_overall_read_time({})
+    sync.sync_overall_read_time({"totalReadTime": 0})
+    assert not notion.upserts
