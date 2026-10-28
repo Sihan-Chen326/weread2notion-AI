@@ -383,73 +383,109 @@ class Synchronizer:
                 self.counts["personal_reviews"] += 1
 
     def sync_reading_persona(self, entries: dict[str, dict[str, Any]], bundles: dict[str, Any]) -> None:
-        """Refresh a playful reading-style profile from completed books.
+        """Rebuild the reading portrait from ALL persisted finished books.
 
-        Uses explicit WeRead finishReading markers, not wishlist items.
-        This describes book themes, never psychological traits.
+        Incremental book bundles contain only changed titles; using them alone
+        silently erases categories and history from the rest of the shelf.
         """
         if not self.notion or "阅读人格" not in self.notion.sources:
             return
-        finished = []
-        for book_id, entry in entries.items():
-            if not entry.get("finishReading"):
+        books = []
+        for row in self.notion.query_all("书架"):
+            props = row.get("properties") or {}
+            get = lambda key: self.notion.plain_property(props.get(key))
+            if get("阅读状态") != "已读":
                 continue
-            info = (bundles.get(book_id) or {}).get("info") or {}
-            title = str(info.get("title") or entry.get("title") or "").strip()
-            cats = info.get("categories") or []
-            catnames = [str(x.get("title") if isinstance(x, dict) else x) for x in cats]
-            catnames.append(str(info.get("category") or entry.get("category") or ""))
-            finished.append((title, " ".join(catnames)))
-
-        if not finished:
+            title = str(get(self.notion.titles["书架"]) or "").strip()
+            book_id = str(get("BookId") or "")
+            finished = get("阅读完成时间")
+            if isinstance(finished, dict):
+                finished = finished.get("start")
+            year = str(finished)[:4] if finished else ""
+            if not (year.isdigit() and len(year) == 4):
+                year = ""
+            category = ""
+            related = get("分类") or []
+            if related and "分类" in self.notion.sources:
+                category_map = getattr(self, "_persona_categories", None)
+                if category_map is None:
+                    category_map = {}
+                    for catrow in self.notion.query_all("分类"):
+                        name = self.notion.plain_property(
+                            (catrow.get("properties") or {}).get(self.notion.titles["分类"])
+                        )
+                        category_map[catrow["id"]] = name or ""
+                    self._persona_categories = category_map
+                category = " ".join(
+                    str(category_map.get(item.get("id"), ""))
+                    for item in related if isinstance(item, dict)
+                )
+            books.append({"title": title, "year": year, "category": category, "id": book_id})
+        if not books:
             return
         themes = {
-            "人间观察者": ("社会", "现实", "小说", "人物"),
-            "时光漫游者": ("历史", "传记", "古代"),
-            "温柔共情者": ("情感", "治愈", "成长"),
-            "思想探索者": ("哲学", "思想", "社科", "心理"),
-            "奇想收藏家": ("科幻", "奇幻", "悬疑"),
+            "人性与现实": ("社会", "纪实", "现实", "人物", "年代"),
+            "情感与关系": ("情感", "女性", "治愈", "童话"),
+            "哲思与成长": ("哲学", "人生哲学", "经典作品", "成长"),
+            "历史与文化": ("历史", "传记", "古代", "文化"),
+            "想象与故事": ("奇幻", "科幻", "幻想", "悬疑"),
         }
-        scores = {
-            theme: sum(any(word in cats for word in words) for _, cats in finished)
-            for theme, words in themes.items()
-        }
-        ranked = sorted(themes, key=lambda t: (-scores[t], list(themes).index(t)))
-        main = ranked[0] if scores[ranked[0]] else "故事收藏家"
-        secondary = next((t for t in ranked[1:] if scores[t]), None)
-        label = f"🐱 {main}" + (f" · {secondary}" if secondary else "")
-        descriptions = {
-            "人间观察者": "书单常聚焦人的处境、社会生活与复杂关系",
-            "时光漫游者": "喜欢从历史与人物故事里理解时代",
-            "温柔共情者": "重视情感、成长与彼此理解的故事",
-            "思想探索者": "乐于通过作品追问思想和世界",
-            "奇想收藏家": "愿意用想象力打开不同的世界",
-            "故事收藏家": "书单题材多元，仍在形成独特的阅读脉络",
-        }
-        summary = descriptions[main] + "；这些是阅读主题的趣味画像，不是心理性格测评。"
-        examples = "、".join(f"《{title}》" for title, _ in finished[:5] if title)
+        def rank(rows):
+            scores = {key: sum(any(word in book["category"] for word in words)
+                               for book in rows) for key, words in themes.items()}
+            return sorted(themes, key=lambda key: (-scores[key], list(themes).index(key))), scores
+        order, scores = rank(books)
+        observed = [t for t in order if scores[t] > 0]
+        main = observed[0] if observed else "多元故事"
+        titles = [book["title"] for book in books if book["title"]]
+        lead = "、".join("《" + t + "》" for t in titles[:4])
+        summary = (
+            f"你的书单以{main}为明显线索"
+            + (f"，同时延伸到{'、'.join(observed[1:3])}" if len(observed) > 1 else "")
+            + "。这反映阅读作品的主题选择，不等于对真实人格的心理测定。"
+        )
+        pref = "；".join(
+            f"{theme}：{scores[theme]}部已完成作品"
+            for theme in observed[:4]
+        ) or "目前分类信息不足，暂不判定偏好"
+        years = sorted(set(b["year"] for b in books if b["year"]))
+        lines = []
+        for year in years:
+            group = [book for book in books if book["year"] == year]
+            ranked, local_scores = rank(group)
+            top = next((t for t in ranked if local_scores[t] > 0), "主题未分类")
+            examples = "、".join("《" + book["title"] + "》" for book in group[:3])
+            lines.append(f"{year}年：{top}。代表作品：{examples}。"
+                         + ("（该年样本有限，暂不作趋势推断）" if len(group) < 3 else ""))
+        unknown = [b for b in books if not b["year"]]
+        if unknown:
+            lines.append(f"另有{len(unknown)}部已读作品缺少可靠完成年份，未纳入年度脉络。")
+        yearly = "\\n".join(lines) or "缺少可信完成日期，暂无法比较年份。"
         self.notion.upsert(
             "阅读人格", "同步键", "reading-persona",
             {
-                "标题": label,
+                "标题": f"🐱 {main}的阅读观察者",
                 "同步键": "reading-persona",
                 "人格画像": summary,
-                "阅读气质": " · ".join(t for t in ranked if scores[t]) or main,
-                "代表作品": examples,
-                "已读本数": len(finished),
+                "阅读气质": " · ".join(observed[:3]) or main,
+                "代表作品": lead,
+                "阅读偏好": pref,
+                "年度脉络": yearly,
+                "画像依据": "来自微信读书同步书架的已读状态、分类和完成日期；按完成年份分组。分类不充分或样本过少时不推断固定偏好。",
+                "已读本数": len(books),
                 "更新时间": datetime.now(SHANGHAI).date().isoformat(),
             },
             TARGET_ICON,
         )
-        self._update_home_callout(
-            "🐱 阅读人格速写",
-            "🐱 阅读人格速写  ·  随已读书籍成长\n"
-            f"{label}\n\n"
-            f"📖 已读 {len(finished)} 本  ·  {summary}\n"
-            f"🌷 阅读气质：{' · '.join(t for t in ranked if scores[t]) or main}\n"
-            f"📚 代表作品：{examples or '继续阅读，等待更多作品'}\n"
-            f"最近同步：{datetime.now(SHANGHAI):%Y-%m-%d %H:%M}",
+        text = (
+            "🐱 阅读人格速写\\n"
+            f"{main}的阅读观察者\\n\\n"
+            f"{summary}\\n\\n"
+            f"📚 代表作品：{lead}\\n\\n"
+            f"🌷 阅读偏好：{pref}\\n\\n"
+            f"🕰️ 阅读成长脉络：\\n{yearly}"
         )
+        self._update_home_callout("🐱 阅读人格速写", text)
 
     def sync_daily_snapshots(
         self,
