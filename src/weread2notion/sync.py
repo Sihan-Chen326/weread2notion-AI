@@ -460,7 +460,7 @@ class Synchronizer:
         unknown = [b for b in books if not b["year"]]
         if unknown:
             lines.append(f"另有{len(unknown)}部已读作品缺少可靠完成年份，未纳入年度脉络。")
-        yearly = "\\n".join(lines) or "缺少可信完成日期，暂无法比较年份。"
+        yearly = "\n".join(lines) or "缺少可信完成日期，暂无法比较年份。"
         self.notion.upsert(
             "阅读人格", "同步键", "reading-persona",
             {
@@ -478,12 +478,12 @@ class Synchronizer:
             TARGET_ICON,
         )
         text = (
-            "🐱 阅读人格速写\\n"
-            f"{main}的阅读观察者\\n\\n"
-            f"{summary}\\n\\n"
-            f"📚 代表作品：{lead}\\n\\n"
-            f"🌷 阅读偏好：{pref}\\n\\n"
-            f"🕰️ 阅读成长脉络：\\n{yearly}"
+            "🐱 阅读人格速写\n"
+            f"{main}的阅读观察者\n\n"
+            f"{summary}\n\n"
+            f"📚 代表作品：{lead}\n\n"
+            f"🌷 阅读偏好：{pref}\n\n"
+            f"🕰️ 阅读成长脉络：\n{yearly}"
         )
         self._update_home_callout("🐱 阅读人格速写", text)
 
