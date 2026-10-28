@@ -287,9 +287,24 @@ class Synchronizer:
                     for item in (block.get("callout") or {}).get("rich_text") or []
                 )
                 if existing.startswith(marker):
+                    # Preserve the user's bold section headings on each refresh.
+                    bold_lines = ("阅读人格速写", "🌷 偏爱作品", "🕰️ 阅读品味的成长脉络")
+                    rich = []
+                    for line in message.splitlines(keepends=True):
+                        content = line.rstrip("\\n")
+                        is_bold = content.strip().startswith(bold_lines) or (
+                            content.strip() and content.strip() == message.splitlines()[1].strip()
+                        )
+                        segments = [content[i:i + 1800] for i in range(0, len(content), 1800)] or [""]
+                        for index, segment in enumerate(segments):
+                            rich.append({
+                                "type": "text",
+                                "text": {"content": segment + ("\\n" if index == len(segments) - 1 and line.endswith("\\n") else "")},
+                                "annotations": {"bold": bool(is_bold)},
+                            })
                     self.notion.request(
                         f"blocks/{block['id']}", "PATCH",
-                        {"callout": {"rich_text": text_value(message)}},
+                        {"callout": {"rich_text": rich}},
                     )
                     return
             print(f"书房未找到展示块：{marker}")
