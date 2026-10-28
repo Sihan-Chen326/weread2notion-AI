@@ -266,13 +266,13 @@ class Synchronizer:
         if "阅读总览" not in self.notion.sources:
             return
 
-        hours = round(seconds / 3600, 1)
+        hours = round(seconds / 3600, 2)
         self.notion.upsert(
             "阅读总览",
             "同步键",
             "overall",
             {
-                "项目": f"{hours:g} 小时",
+                "项目": f"{seconds // 3600}小时{(seconds % 3600) // 60}分钟",
                 "同步键": "overall",
                 "累计阅读秒": seconds,
                 "累计阅读小时": hours,
