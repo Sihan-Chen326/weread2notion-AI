@@ -215,6 +215,7 @@ class Synchronizer:
         self.sync_book_content(bundles, books, periods)
         self.sync_reading_records(days, periods, full=rebuild)
         self.sync_overall_read_time(stats.get("overall") or {})
+        self.sync_reading_persona(entry_by_id, bundles)
         result = dict(self.counts)
         if self.failed_books:
             result["failed_books"] = self.failed_books
@@ -239,7 +240,30 @@ class Synchronizer:
             return
 
         self.counts["reading_seconds"] = seconds
-        if not self.notion or "阅读总览" not in self.notion.sources:
+        if not self.notion:
+            return
+        if "阅读年度校准" in self.notion.sources:
+            rows = self.notion.row_index("阅读年度校准", "年份")
+            current_year = str(datetime.now(SHANGHAI).year)
+            row = rows.get(current_year)
+            if row:
+                props = row["properties"]
+                baseline = self.notion.plain_property(props.get("基准累计秒"))
+                minutes = self.notion.plain_property(props.get("基准分钟"))
+                # Only update after a trusted baseline was established, and
+                # never let a transient lower reading cause a negative delta.
+                if baseline is not None and minutes is not None and seconds >= int(baseline):
+                    value = int(minutes) + (seconds - int(baseline)) // 60
+                    hours, remain = divmod(value, 60)
+                    self.notion.request(
+                        f"pages/{row['page_id']}", "PATCH",
+                        {"properties": self.notion.properties("阅读年度校准", {
+                            "阅读分钟": value,
+                            "阅读时长": f"{hours}小时{remain}分钟",
+                            "更新时间": datetime.now(SHANGHAI).date().isoformat(),
+                        })},
+                    )
+        if "阅读总览" not in self.notion.sources:
             return
 
         hours = round(seconds / 3600, 1)
@@ -253,6 +277,66 @@ class Synchronizer:
                 "累计阅读秒": seconds,
                 "累计阅读小时": hours,
                 "最近更新": datetime.now(SHANGHAI).date().isoformat(),
+            },
+            TARGET_ICON,
+        )
+
+    def sync_reading_persona(self, entries: dict[str, dict[str, Any]], bundles: dict[str, Any]) -> None:
+        """Refresh a playful reading-style profile from completed books.
+
+        Uses explicit WeRead finishReading markers, not wishlist items.
+        This describes book themes, never psychological traits.
+        """
+        if not self.notion or "阅读人格" not in self.notion.sources:
+            return
+        finished = []
+        for book_id, entry in entries.items():
+            if not entry.get("finishReading"):
+                continue
+            info = (bundles.get(book_id) or {}).get("info") or {}
+            title = str(info.get("title") or entry.get("title") or "").strip()
+            cats = info.get("categories") or []
+            catnames = [str(x.get("title") if isinstance(x, dict) else x) for x in cats]
+            catnames.append(str(info.get("category") or entry.get("category") or ""))
+            finished.append((title, " ".join(catnames)))
+
+        if not finished:
+            return
+        themes = {
+            "人间观察者": ("社会", "现实", "小说", "人物"),
+            "时光漫游者": ("历史", "传记", "古代"),
+            "温柔共情者": ("情感", "治愈", "成长"),
+            "思想探索者": ("哲学", "思想", "社科", "心理"),
+            "奇想收藏家": ("科幻", "奇幻", "悬疑"),
+        }
+        scores = {
+            theme: sum(any(word in cats for word in words) for _, cats in finished)
+            for theme, words in themes.items()
+        }
+        ranked = sorted(themes, key=lambda t: (-scores[t], list(themes).index(t)))
+        main = ranked[0] if scores[ranked[0]] else "故事收藏家"
+        secondary = next((t for t in ranked[1:] if scores[t]), None)
+        label = f"🐱 {main}" + (f" · {secondary}" if secondary else "")
+        descriptions = {
+            "人间观察者": "书单常聚焦人的处境、社会生活与复杂关系",
+            "时光漫游者": "喜欢从历史与人物故事里理解时代",
+            "温柔共情者": "重视情感、成长与彼此理解的故事",
+            "思想探索者": "乐于通过作品追问思想和世界",
+            "奇想收藏家": "愿意用想象力打开不同的世界",
+            "故事收藏家": "书单题材多元，仍在形成独特的阅读脉络",
+        }
+        summary = descriptions[main] + "；这些是阅读主题的趣味画像，不是心理性格测评。"
+        examples = "、".join(f"《{title}》" for title, _ in finished[:5] if title)
+        self.notion.upsert(
+            "阅读人格", "同步键", "reading-persona",
+            {
+                "标题": label,
+                "同步键": "reading-persona",
+                "人格画像": summary,
+                "阅读气质": " · ".join(t for t in ranked if scores[t]) or main,
+                "代表作品": examples,
+                "已读本数": len(finished),
+                "更新时间": datetime.now(SHANGHAI).date().isoformat(),
             },
             TARGET_ICON,
         )
