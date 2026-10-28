@@ -12,6 +12,7 @@ from .normalize import (
     shelf_entries,
 )
 from .blocks import get_callout, get_heading, get_table_of_contents
+from .notion import text_value
 from .weread import WeReadError
 
 
@@ -215,6 +216,8 @@ class Synchronizer:
         self.sync_book_content(bundles, books, periods)
         self.sync_reading_records(days, periods, full=rebuild)
         self.sync_overall_read_time(stats.get("overall") or {})
+        self.sync_annual_read_time(stats.get("annual") or {}, stats.get("overall") or {})
+        self.sync_personal_reviews(bundles)
         self.sync_reading_persona(entry_by_id, bundles)
         result = dict(self.counts)
         if self.failed_books:
@@ -242,27 +245,6 @@ class Synchronizer:
         self.counts["reading_seconds"] = seconds
         if not self.notion:
             return
-        if "阅读年度校准" in self.notion.sources:
-            rows = self.notion.row_index("阅读年度校准", "年份")
-            current_year = str(datetime.now(SHANGHAI).year)
-            row = rows.get(current_year)
-            if row:
-                props = row["properties"]
-                baseline = self.notion.plain_property(props.get("基准累计秒"))
-                minutes = self.notion.plain_property(props.get("基准分钟"))
-                # Only update after a trusted baseline was established, and
-                # never let a transient lower reading cause a negative delta.
-                if baseline is not None and minutes is not None and seconds >= int(baseline):
-                    value = int(minutes) + (seconds - int(baseline)) // 60
-                    hours, remain = divmod(value, 60)
-                    self.notion.request(
-                        f"pages/{row['page_id']}", "PATCH",
-                        {"properties": self.notion.properties("阅读年度校准", {
-                            "阅读分钟": value,
-                            "阅读时长": f"{hours}小时{remain}分钟",
-                            "更新时间": datetime.now(SHANGHAI).date().isoformat(),
-                        })},
-                    )
         if "阅读总览" not in self.notion.sources:
             return
 
@@ -272,7 +254,7 @@ class Synchronizer:
             "同步键",
             "overall",
             {
-                "项目": f"{seconds // 3600}小时{(seconds % 3600) // 60}分钟",
+                "项目": "📖 微信读书累计",
                 "同步键": "overall",
                 "累计阅读秒": seconds,
                 "累计阅读小时": hours,
@@ -280,6 +262,133 @@ class Synchronizer:
             },
             TARGET_ICON,
         )
+        self._update_home_callout(
+            "⏳ 阅读总时长",
+            "⏳ 阅读总时长  ·  微信读书自动统计\n"
+            f"{seconds // 3600} 小时 {(seconds % 3600) // 60} 分钟 "
+            f"{seconds % 60} 秒\n"
+            f"最近同步：{datetime.now(SHANGHAI):%Y-%m-%d %H:%M}"
+            "  ·  数据源：微信读书累计阅读秒数",
+        )
+
+    def _update_home_callout(self, marker: str, message: str) -> None:
+        """Update the visible Notion callout without making a duplicate static metric.
+
+        A dashboard-block failure never aborts the bookshelf/data sync.
+        """
+        if not self.notion:
+            return
+        try:
+            current_id = self.notion.page_id
+            for _ in range(4):
+                page = self.notion.request(f"pages/{current_id}")
+                parent = page.get("parent") or {}
+                next_id = parent.get("page_id") if parent.get("type") == "page_id" else None
+                if not next_id:
+                    break
+                current_id = next_id
+            for block in self.notion.list_children(current_id):
+                if block.get("type") != "callout":
+                    continue
+                existing = "".join(
+                    item.get("plain_text", "")
+                    for item in (block.get("callout") or {}).get("rich_text") or []
+                )
+                if existing.startswith(marker):
+                    self.notion.request(
+                        f"blocks/{block['id']}", "PATCH",
+                        {"callout": {"rich_text": text_value(message)}},
+                    )
+                    return
+            print(f"书房未找到展示块：{marker}")
+        except Exception as exc:
+            print(f"书房展示块更新失败（不影响数据库）：{exc}")
+
+    def sync_annual_read_time(self, annual: dict, overall: dict) -> None:
+        """Use each year's actual WeRead /readdata/detail annually.totalReadTime.
+
+        No daily sum, fixed manual baseline, or monthly bucket substitution.
+        Preserve last confirmed numbers if the upstream field is absent.
+        """
+        if not self.notion or "年" not in self.notion.sources:
+            return
+        verified = {}
+        for year, data in sorted(annual.items()):
+            raw = (data or {}).get("totalReadTime")
+            try:
+                seconds = int(raw) if raw is not None else 0
+            except (TypeError, ValueError, OverflowError):
+                seconds = 0
+            if seconds > 0:
+                verified[int(year)] = seconds
+            else:
+                self.counts["annual_missing"] += 1
+        overall_seconds = int((overall or {}).get("totalReadTime") or 0)
+        if verified and overall_seconds and len(verified) >= 3:
+            total = sum(verified.values())
+            # Prevent mass replacement when the API returns incomplete historical periods.
+            if abs(total - overall_seconds) > max(600, overall_seconds * 0.1):
+                print(
+                    f"年度数据校验异常，保留旧值：按年汇总={total} 秒，"
+                    f"官方累计={overall_seconds} 秒"
+                )
+                self.counts["annual_unverified"] = len(verified)
+                return
+        for year, seconds in verified.items():
+            self.notion.upsert(
+                "年", "标题", str(year),
+                {
+                    "标题": str(year),
+                    "微信读书年度秒": seconds,
+                    "年度数据状态": "微信读书官方年度总时长 · 已同步",
+                    "最近从微信读书同步": datetime.now(SHANGHAI).date().isoformat(),
+                },
+                TARGET_ICON,
+            )
+            self.counts["annual_years"] += 1
+
+    def sync_personal_reviews(self, bundles: dict) -> None:
+        """Mirror only own, book-associated reviews and thoughts by stable reviewId."""
+        name = "📝 我的书评与想法"
+        if not self.notion or name not in self.notion.sources:
+            return
+        for book_id, bundle in bundles.items():
+            info = bundle.get("info") or {}
+            book_title = str(info.get("title") or book_id)
+            for review in bundle.get("reviews") or []:
+                if not isinstance(review, dict):
+                    continue
+                detail = review.get("review") if isinstance(review.get("review"), dict) else review
+                review_id = str(detail.get("reviewId") or "").strip()
+                content = str(detail.get("content") or "").strip()
+                if not review_id or not content:
+                    continue
+                abstract = str(detail.get("abstract") or "").strip()
+                chapter = str(detail.get("chapterName") or "").strip()
+                if abstract:
+                    kind = "划线想法"
+                elif chapter or detail.get("chapterUid"):
+                    kind = "章节点评"
+                elif detail.get("isFinish") is not None:
+                    kind = "整本书评"
+                else:
+                    kind = "其他想法"
+                self.notion.upsert(
+                    name, "ReviewId", review_id,
+                    {
+                        "标题": f"📝 {book_title} · {kind}",
+                        "ReviewId": review_id,
+                        "BookId": str(book_id),
+                        "所属书籍": book_title,
+                        "内容": content,
+                        "类型": kind,
+                        "发表日期": iso_date(detail.get("createTime")),
+                        "章节": chapter,
+                        "对应摘录": abstract,
+                        "评分": detail.get("star") if isinstance(detail.get("star"), (float, int)) else None,
+                    },
+                )
+                self.counts["personal_reviews"] += 1
 
     def sync_reading_persona(self, entries: dict[str, dict[str, Any]], bundles: dict[str, Any]) -> None:
         """Refresh a playful reading-style profile from completed books.
@@ -339,6 +448,15 @@ class Synchronizer:
                 "更新时间": datetime.now(SHANGHAI).date().isoformat(),
             },
             TARGET_ICON,
+        )
+        self._update_home_callout(
+            "🐱 阅读人格速写",
+            "🐱 阅读人格速写  ·  随已读书籍成长\n"
+            f"{label}\n\n"
+            f"📖 已读 {len(finished)} 本  ·  {summary}\n"
+            f"🌷 阅读气质：{' · '.join(t for t in ranked if scores[t]) or main}\n"
+            f"📚 代表作品：{examples or '继续阅读，等待更多作品'}\n"
+            f"最近同步：{datetime.now(SHANGHAI):%Y-%m-%d %H:%M}",
         )
 
     def sync_daily_snapshots(
