@@ -254,21 +254,13 @@ class Synchronizer:
             "同步键",
             "overall",
             {
-                "项目": "📖 微信读书累计",
+                "项目": "总阅读时间",
                 "同步键": "overall",
                 "累计阅读秒": seconds,
                 "累计阅读小时": hours,
                 "最近更新": datetime.now(SHANGHAI).date().isoformat(),
             },
             TARGET_ICON,
-        )
-        self._update_home_callout(
-            "⏳ 阅读总时长",
-            "⏳ 阅读总时长  ·  微信读书自动统计\n"
-            f"{seconds // 3600} 小时 {(seconds % 3600) // 60} 分钟 "
-            f"{seconds % 60} 秒\n"
-            f"最近同步：{datetime.now(SHANGHAI):%Y-%m-%d %H:%M}"
-            "  ·  数据源：微信读书累计阅读秒数",
         )
 
     def _update_home_callout(self, marker: str, message: str) -> None:
