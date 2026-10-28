@@ -493,14 +493,14 @@ class Synchronizer:
             TARGET_ICON,
         )
         text = (
-            "🐱 阅读人格速写\n"
+            "阅读人格速写\n"
             f"{main}的阅读观察者\n\n"
             f"{summary}\n\n"
             f"📚 代表作品：{lead}\n\n"
-            f"🌷 阅读偏好：{pref}\n\n"
-            f"🕰️ 阅读成长脉络：\n{yearly}"
+            f"🌷 偏爱作品：{pref}\n\n"
+            f"🕰️ 阅读品味的成长脉络\n{yearly}"
         )
-        self._update_home_callout("🐱 阅读人格速写", text)
+        self._update_home_callout("阅读人格速写", text)
 
     def sync_daily_snapshots(
         self,
