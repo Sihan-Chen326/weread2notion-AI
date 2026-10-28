@@ -291,7 +291,7 @@ class Synchronizer:
                     bold_lines = ("阅读人格速写", "🌷 偏爱作品", "🕰️ 阅读品味的成长脉络")
                     rich = []
                     for line in message.splitlines(keepends=True):
-                        content = line.rstrip("\\n")
+                        content = line.rstrip("\n")
                         is_bold = content.strip().startswith(bold_lines) or (
                             content.strip() and content.strip() == message.splitlines()[1].strip()
                         )
@@ -299,7 +299,7 @@ class Synchronizer:
                         for index, segment in enumerate(segments):
                             rich.append({
                                 "type": "text",
-                                "text": {"content": segment + ("\\n" if index == len(segments) - 1 and line.endswith("\\n") else "")},
+                                "text": {"content": segment + ("\n" if index == len(segments) - 1 and line.endswith("\n") else "")},
                                 "annotations": {"bold": bool(is_bold)},
                             })
                     self.notion.request(
