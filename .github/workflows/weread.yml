@@ -8,8 +8,8 @@ on:
         type: boolean
         default: false
   schedule:
-    # GitHub Actions schedules use UTC.
-    - cron: "0 */3 * * *" # 每3小时检查一次，UTC调度；实际执行可能延迟
+    # 每天北京时间 00:00 (UTC+8)，对应前一天 UTC 16:00；GitHub 定时任务可能延迟。
+    - cron: "0 16 * * *"
 
 jobs:
   sync:
